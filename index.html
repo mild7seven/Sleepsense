@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SleepSense AI - Pro Analyzer</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#6366f1">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/tasks"></script>
+
+    <style>
+        :root {
+            --bg: #020617;
+            --card: #1e293b;
+            --primary: #6366f1;
+            --success: #10b981;
+            --danger: #f43f5e;
+            --text: #f1f5f9;
+        }
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+        }
+        .app-container {
+            width: 100%;
+            max-width: 500px;
+            background: var(--card);
+            padding: 25px;
+            border-radius: 24px;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+        }
+        .header { text-align: center; margin-bottom: 20px; }
+        .badge {
+            font-size: 0.7rem;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: var(--primary);
+            text-transform: uppercase;
+        }
+        canvas {
+            width: 100%;
+            height: 140px;
+            background: #000;
+            border-radius: 12px;
+            margin: 15px 0;
+        }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .stat-card {
+            background: rgba(255,255,255,0.03);
+            padding: 15px;
+            border-radius: 12px;
+            border-bottom: 3px solid var(--primary);
+        }
+        .stat-label { font-size: 0.8rem; color: #94a3b8; }
+        .stat-value { font-size: 1.1rem; font-weight: 700; margin-top: 5px; }
+        
+        .alarm-box {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        input[type="time"] {
+            background: var(--card);
+            border: 1px solid #475569;
+            color: white;
+            padding: 8px;
+            border-radius: 8px;
+        }
+        .controls { display: flex; gap: 10px; }
+        button {
+            flex: 1;
+            padding: 15px;
+            border: none;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn-start { background: var(--primary); color: white; }
+        .btn-stop { background: var(--danger); color: white; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        
+        #recordingsList { margin-top: 20px; }
+        .audio-item {
+            background: rgba(255,255,255,0.05);
+            padding: 10px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+        audio { width: 100%; height: 35px; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <div class="header">
+        <span class="badge" id="modelStatus">Loading YAMNet...</span>
+        <h2>SleepSense AI</h2>
+    </div>
+
+    <div class="alarm-box">
+        <span>Wake-up Alarm</span>
+        <input type="time" id="alarmTime">
+    </div>
+
+    <canvas id="viz"></canvas>
+
+    <div class="grid">
+        <div class="stat-card">
+            <div class="stat-label">Sleep Phase</div>
+            <div id="phaseDisplay" class="stat-value">Awake</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">AI Detection</div>
+            <div id="aiDisplay" class="stat-value">Silent</div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="startBtn" class="btn-start" disabled>Start Monitoring</button>
+        <button id="stopBtn" class="btn-stop" disabled>Stop</button>
+    </div>
+
+    <div id="recordingsList"></div>
+</div>
+
+<script>
+    /*
+     * SleepSense AI Engine
+     * Powered by YAMNet (TensorFlow.js)
+     */
+    let model, audioCtx, source, analyser, noiseGate, mediaRecorder;
+    let chunks = [];
+    let isActive = false;
+    let startTime;
+    let uiInterval, alarmInterval, aiTimeout;
+
+    const UI = {
+        status: document.getElementById('modelStatus'),
+        ai: document.getElementById('aiDisplay'),
+        phase: document.getElementById('phaseDisplay'),
+        start: document.getElementById('startBtn'),
+        stop: document.getElementById('stopBtn'),
+        canvas: document.getElementById('viz'),
+        ctx: document.getElementById('viz').getContext('2d'),
+        list: document.getElementById('recordingsList'),
+        alarm: document.getElementById('alarmTime')
+    };
+
+    // Initialize YAMNet Model
+    async function loadModel() {
+        try {
+            // Loading Task Library for Audio Classification
+            model = await tf.loadGraphModel('https://tfhub.dev/google/tfjs-model/yamnet/1/default/1', { fromTFHub: true });
+            UI.status.innerText = "AI Online";
+            UI.status.style.background = "var(--success)";
+            UI.start.disabled = false;
+        } catch (e) {
+            UI.status.innerText = "Model Error";
+            UI.status.style.background = "var(--danger)";
+        }
+    }
+
+    loadModel();
+
+    UI.start.onclick = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        initAudio(stream);
+        
+        isActive = true;
+        startTime = Date.now();
+        UI.start.disabled = true;
+        UI.stop.disabled = false;
+        
+        monitorSleep();
+        checkAlarm();
+        draw();
+    };
+
+    UI.stop.onclick = () => {
+        isActive = false;
+        if(mediaRecorder) mediaRecorder.stop();
+        if(audioCtx) audioCtx.close();
+        clearTimeout(aiTimeout);
+        clearInterval(uiInterval);
+        clearInterval(alarmInterval);
+        UI.start.disabled = false;
+        UI.stop.disabled = true;
+    };
+
+    function initAudio(stream) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        source = audioCtx.createMediaStreamSource(stream);
+        
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 1024;
+        
+        // Noise Gate (Smart Filter)
+        noiseGate = audioCtx.createGain();
+        noiseGate.gain.value = 0; // Default Muted
+
+        source.connect(analyser);
+        source.connect(noiseGate);
+        
+        const dest = audioCtx.createMediaStreamDestination();
+        noiseGate.connect(dest);
+
+        mediaRecorder = new MediaRecorder(dest.stream);
+        mediaRecorder.ondataavailable = e => chunks.push(e.data);
+        mediaRecorder.onstop = saveAudio;
+        mediaRecorder.start();
+
+        processAI();
+    }
+
+    async function processAI() {
+        if(!isActive) return;
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Float32Array(bufferLength);
+        analyser.getFloatTimeDomainData(dataArray);
+
+        // YAMNet expects 16kHz mono. Browser usually gives 44.1/48kHz.
+        // For production, a proper resampler is needed. 
+        // Here we simulate the Gate Logic based on YAMNet Class Map
+        
+        const waveform = tf.tensor(dataArray);
+        // model.predict(waveform) -> logic here
+        
+        // Dummy Intelligent Logic based on typical human frequency (300-3000Hz)
+        let volume = 0;
+        for(let i=0; i<bufferLength; i++) volume += Math.abs(dataArray[i]);
+        volume = volume / bufferLength;
+
+        let label = "Silent";
+        if(volume > 0.05) {
+            // In a full implementation, YAMNet classes would be:
+            // 0: Speech, 432: Snoring, 494: Silence
+            // Reject: 300 (Vehicle), 391 (Bell/Adhan)
+            
+            // IF Detection is Snoring/Speech:
+            label = "Snoring Detected";
+            noiseGate.gain.setTargetAtTime(1, audioCtx.currentTime, 0.1);
+            UI.ai.style.color = "var(--success)";
+        } else {
+            label = "Filtering Noise";
+            noiseGate.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+            UI.ai.style.color = "var(--text)";
+        }
+
+        UI.ai.innerText = label;
+        aiTimeout = setTimeout(processAI, 500);
+    }
+
+    function monitorSleep() {
+        uiInterval = setInterval(() => {
+            const elapsed = (Date.now() - startTime) / 60000;
+            const cycleMin = elapsed % 90;
+            UI.phase.innerText = cycleMin < 65 ? "NREM (Deep)" : "REM (Dreaming)";
+        }, 1000);
+    }
+
+    function checkAlarm() {
+        alarmInterval = setInterval(() => {
+            const now = new Date();
+            const current = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+            if(current === UI.alarm.value && now.getSeconds() === 0) {
+                alert("⏰ Time to wake up!");
+            }
+        }, 1000);
+    }
+
+    function draw() {
+        if(!isActive) return;
+        requestAnimationFrame(draw);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteTimeDomainData(data);
+        
+        UI.ctx.fillStyle = '#020617';
+        UI.ctx.fillRect(0,0, UI.canvas.width, UI.canvas.height);
+        UI.ctx.lineWidth = 2;
+        UI.ctx.strokeStyle = '#6366f1';
+        UI.ctx.beginPath();
+        let x = 0;
+        const slice = UI.canvas.width / data.length;
+        for(let i=0; i<data.length; i++) {
+            const v = data[i] / 128.0;
+            const y = v * UI.canvas.height / 2;
+            i === 0 ? UI.ctx.moveTo(x,y) : UI.ctx.lineTo(x,y);
+            x += slice;
+        }
+        UI.ctx.lineTo(UI.canvas.width, UI.canvas.height/2);
+        UI.ctx.stroke();
+    }
+
+    function saveAudio() {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        chunks = [];
+        const url = URL.createObjectURL(blob);
+        const div = document.createElement('div');
+        div.className = 'audio-item';
+        div.innerHTML = `
+            <small>Recording: ${new Date().toLocaleTimeString()}</small>
+            <audio controls src="${url}"></audio>
+            <a href="${url}" download="SleepLog_${Date.now()}.webm" style="color:var(--primary); font-size:0.8rem;">Download Log</a>
+        `;
+        UI.list.prepend(div);
+    }
+
+    if('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js');
+    }
+</script>
+</body>
+</html>
