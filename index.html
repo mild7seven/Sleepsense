@@ -8,7 +8,6 @@
     <meta name="theme-color" content="#6366f1">
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/tasks"></script>
 
     <style>
         :root {
@@ -41,7 +40,7 @@
             font-size: 0.7rem;
             padding: 4px 10px;
             border-radius: 20px;
-            background: var(--primary);
+            background: #334155;
             text-transform: uppercase;
         }
         canvas {
@@ -105,7 +104,7 @@
 
 <div class="app-container">
     <div class="header">
-        <span class="badge" id="modelStatus">Loading YAMNet...</span>
+        <span class="badge" id="modelStatus">Loading AI Model...</span>
         <h2>SleepSense AI</h2>
     </div>
 
@@ -138,7 +137,7 @@
 <script>
     /*
      * SleepSense AI Engine
-     * Powered by YAMNet (TensorFlow.js)
+     * Powered by Web Audio API & TensorFlow.js
      */
     let model, audioCtx, source, analyser, noiseGate, mediaRecorder;
     let chunks = [];
@@ -158,15 +157,21 @@
         alarm: document.getElementById('alarmTime')
     };
 
-    // Initialize YAMNet Model
+    // 1. Initialize YAMNet Model using Direct Storage Link
     async function loadModel() {
         try {
-            // Loading Task Library for Audio Classification
-            model = await tf.loadGraphModel('https://tfhub.dev/google/tfjs-model/yamnet/1/default/1', { fromTFHub: true });
+            console.log("Downloading YAMNet model...");
+            // Direct link to avoid GitHub Pages CORS redirect issues
+            const modelUrl = 'https://storage.googleapis.com/tfjs-models/savedmodel/yamnet/tfjs/1/model.json';
+            
+            model = await tf.loadGraphModel(modelUrl); 
+            
             UI.status.innerText = "AI Online";
             UI.status.style.background = "var(--success)";
             UI.start.disabled = false;
+            console.log("Model loaded successfully!");
         } catch (e) {
+            console.error("YAMNet Error:", e);
             UI.status.innerText = "Model Error";
             UI.status.style.background = "var(--danger)";
         }
@@ -174,31 +179,42 @@
 
     loadModel();
 
+    // 2. Main Controls
     UI.start.onclick = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        initAudio(stream);
-        
-        isActive = true;
-        startTime = Date.now();
-        UI.start.disabled = true;
-        UI.stop.disabled = false;
-        
-        monitorSleep();
-        checkAlarm();
-        draw();
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            initAudio(stream);
+            
+            isActive = true;
+            startTime = Date.now();
+            UI.start.disabled = true;
+            UI.stop.disabled = false;
+            
+            monitorSleep();
+            checkAlarm();
+            draw();
+        } catch (err) {
+            alert("Microphone permission is required.");
+            console.error(err);
+        }
     };
 
     UI.stop.onclick = () => {
         isActive = false;
-        if(mediaRecorder) mediaRecorder.stop();
+        if(mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
         if(audioCtx) audioCtx.close();
+        
         clearTimeout(aiTimeout);
         clearInterval(uiInterval);
         clearInterval(alarmInterval);
+        
         UI.start.disabled = false;
         UI.stop.disabled = true;
+        UI.phase.innerText = "Awake";
+        UI.ai.innerText = "Stopped";
     };
 
+    // 3. Audio Routing & Noise Gate Setup
     function initAudio(stream) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         source = audioCtx.createMediaStreamSource(stream);
@@ -206,9 +222,9 @@
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 1024;
         
-        // Noise Gate (Smart Filter)
+        // Smart Noise Gate controlled by AI
         noiseGate = audioCtx.createGain();
-        noiseGate.gain.value = 0; // Default Muted
+        noiseGate.gain.value = 0; // Default Muted to prevent noise recording
 
         source.connect(analyser);
         source.connect(noiseGate);
@@ -217,13 +233,16 @@
         noiseGate.connect(dest);
 
         mediaRecorder = new MediaRecorder(dest.stream);
-        mediaRecorder.ondataavailable = e => chunks.push(e.data);
+        mediaRecorder.ondataavailable = e => {
+            if(e.data.size > 0) chunks.push(e.data);
+        };
         mediaRecorder.onstop = saveAudio;
         mediaRecorder.start();
 
         processAI();
     }
 
+    // 4. AI Processing Loop
     async function processAI() {
         if(!isActive) return;
 
@@ -231,30 +250,25 @@
         const dataArray = new Float32Array(bufferLength);
         analyser.getFloatTimeDomainData(dataArray);
 
-        // YAMNet expects 16kHz mono. Browser usually gives 44.1/48kHz.
-        // For production, a proper resampler is needed. 
-        // Here we simulate the Gate Logic based on YAMNet Class Map
-        
-        const waveform = tf.tensor(dataArray);
-        // model.predict(waveform) -> logic here
-        
-        // Dummy Intelligent Logic based on typical human frequency (300-3000Hz)
+        // Dummy logic to simulate AI Classification for prototype purposes.
+        // In a full implementation, you would pass dataArray as a tensor to model.predict()
         let volume = 0;
-        for(let i=0; i<bufferLength; i++) volume += Math.abs(dataArray[i]);
+        for(let i=0; i<bufferLength; i++) {
+            volume += Math.abs(dataArray[i]);
+        }
         volume = volume / bufferLength;
 
         let label = "Silent";
+        
+        // Simulating detection: If volume is at a speaking/snoring level
         if(volume > 0.05) {
-            // In a full implementation, YAMNet classes would be:
-            // 0: Speech, 432: Snoring, 494: Silence
-            // Reject: 300 (Vehicle), 391 (Bell/Adhan)
-            
-            // IF Detection is Snoring/Speech:
-            label = "Snoring Detected";
+            label = "Snoring / Talking";
+            // Open the recording gate (Volume = 1)
             noiseGate.gain.setTargetAtTime(1, audioCtx.currentTime, 0.1);
             UI.ai.style.color = "var(--success)";
         } else {
             label = "Filtering Noise";
+            // Close the recording gate (Volume = 0)
             noiseGate.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
             UI.ai.style.color = "var(--text)";
         }
@@ -263,6 +277,7 @@
         aiTimeout = setTimeout(processAI, 500);
     }
 
+    // 5. Utilities: Sleep Tracker, Alarm, Visualizer, Save Logic
     function monitorSleep() {
         uiInterval = setInterval(() => {
             const elapsed = (Date.now() - startTime) / 60000;
@@ -273,6 +288,7 @@
 
     function checkAlarm() {
         alarmInterval = setInterval(() => {
+            if(!UI.alarm.value) return;
             const now = new Date();
             const current = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
             if(current === UI.alarm.value && now.getSeconds() === 0) {
@@ -305,6 +321,7 @@
     }
 
     function saveAudio() {
+        if(chunks.length === 0) return;
         const blob = new Blob(chunks, { type: 'audio/webm' });
         chunks = [];
         const url = URL.createObjectURL(blob);
@@ -313,13 +330,16 @@
         div.innerHTML = `
             <small>Recording: ${new Date().toLocaleTimeString()}</small>
             <audio controls src="${url}"></audio>
-            <a href="${url}" download="SleepLog_${Date.now()}.webm" style="color:var(--primary); font-size:0.8rem;">Download Log</a>
+            <a href="${url}" download="SleepLog_${Date.now()}.webm" style="color:var(--primary); font-size:0.8rem; text-decoration:none; display:block; margin-top:5px;">Download WebM File</a>
         `;
         UI.list.prepend(div);
     }
 
+    // Register Service Worker
     if('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js');
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('sw.js').catch(err => console.error("SW failed:", err));
+        });
     }
 </script>
 </body>
