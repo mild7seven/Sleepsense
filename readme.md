@@ -1,20 +1,18 @@
-# SleepSense AI - Pro Sleep Analyzer
+# SleepSense AI - Visual Playback Edition
 
-A professional Progressive Web App (PWA) designed to monitor sleep sounds (snoring, talking) while intelligently filtering out environmental noise using the **YAMNet** deep learning model.
+An intelligent PWA to monitor sleep sounds with real-time AI noise filtering and a synchronized playback visualizer.
+
+## Key Changes
+- **Download Removed:** Audio logs are no longer exported.
+- **Visual Playback:** When a recording is stopped, a "Play Last Recording" button appears. 
+- **Synchronized Visualizer:** During playback, the waveform visualizer follows the actual audio data of the recording, allowing you to see the intensity of snoring or talking sessions.
+- **Dual Mode Visualizer:** The waveform changes color (Green for playback, Indigo for active monitoring).
 
 ## Features
-- **YAMNet AI Integration:** Classifies audio in real-time to distinguish between human sleep sounds and background noise (traffic, horns, clocks).
-- **Smart Noise Gate:** Automatically mutes recording when noise is detected, ensuring clean data logs.
-- **NREM/REM Cycle Tracking:** Visualizes sleep stages based on the standard 90-minute human sleep cycle.
-- **Waveform Visualizer:** Real-time audio feedback.
-- **PWA Ready:** Installable on Android/iOS and works offline.
-- **Privacy First:** All AI processing happens locally in your browser.
-
-## Tech Stack
-- TensorFlow.js (YAMNet Model)
-- Web Audio API (Analyser & Gain Nodes)
-- Canvas API
-- Service Workers (Offline support)
+- AI-based noise gate using TensorFlow.js.
+- NREM/REM sleep cycle estimation.
+- Integrated wake-up alarm.
+- Private: All processing and playback happen strictly on your device.
 
 ## License
-MIT License - See LICENSE file for details.
+MIT License.

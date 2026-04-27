@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SleepSense AI - Lite Model</title>
+    <title>SleepSense AI - Visual Playback</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#6366f1">
     
@@ -77,7 +77,8 @@
             padding: 8px;
             border-radius: 8px;
         }
-        .controls { display: flex; gap: 10px; }
+        .controls { display: flex; flex-direction: column; gap: 10px; }
+        .btn-row { display: flex; gap: 10px; }
         button {
             flex: 1;
             padding: 15px;
@@ -89,16 +90,11 @@
         }
         .btn-start { background: var(--primary); color: white; }
         .btn-stop { background: var(--danger); color: white; }
+        .btn-play { background: var(--success); color: white; display: none; }
         button:disabled { opacity: 0.4; cursor: not-allowed; }
         
-        #recordingsList { margin-top: 20px; }
-        .audio-item {
-            background: rgba(255,255,255,0.05);
-            padding: 10px;
-            border-radius: 10px;
-            margin-bottom: 10px;
-        }
-        audio { width: 100%; height: 35px; margin-top: 8px; }
+        .playback-area { margin-top: 20px; text-align: center; }
+        audio { display: none; }
     </style>
 </head>
 <body>
@@ -128,22 +124,30 @@
     </div>
 
     <div class="controls">
-        <button id="startBtn" class="btn-start" disabled>Start Monitoring</button>
-        <button id="stopBtn" class="btn-stop" disabled>Stop</button>
+        <div class="btn-row">
+            <button id="startBtn" class="btn-start" disabled>Start Monitoring</button>
+            <button id="stopBtn" class="btn-stop" disabled>Stop</button>
+        </div>
+        <button id="playBtn" class="btn-play">▶ Play Last Recording</button>
     </div>
 
-    <div id="recordingsList"></div>
+    <div class="playback-area">
+        <audio id="audioPlayback" controls></audio>
+        <p id="playbackMsg" style="font-size: 0.8rem; color: #94a3b8;"></p>
+    </div>
 </div>
 
 <script>
     /*
-     * SleepSense AI Engine
-     * Powered by Web Audio API & TF.js Speech Commands Model
+     * SleepSense AI Engine - Visual Playback Edition
      */
     let aiRecognizer, wordLabels;
     let audioCtx, source, analyser, noiseGate, mediaRecorder;
+    let playbackSource;
     let chunks = [];
     let isActive = false;
+    let isPlaying = false;
+    let recordedBlobUrl = null;
     let startTime;
     let uiInterval, alarmInterval;
 
@@ -153,29 +157,23 @@
         phase: document.getElementById('phaseDisplay'),
         start: document.getElementById('startBtn'),
         stop: document.getElementById('stopBtn'),
+        play: document.getElementById('playBtn'),
         canvas: document.getElementById('viz'),
         ctx: document.getElementById('viz').getContext('2d'),
-        list: document.getElementById('recordingsList'),
-        alarm: document.getElementById('alarmTime')
+        alarm: document.getElementById('alarmTime'),
+        audio: document.getElementById('audioPlayback'),
+        msg: document.getElementById('playbackMsg')
     };
 
-    // 1. Initialize TF.js Speech Commands Model
-    // This model is extremely lightweight and hosted on jsdelivr, avoiding GitHub Pages CORS issues.
     async function loadModel() {
         try {
-            console.log("Loading Speech Commands Model...");
-            // BROWSER_FFT enables the browser's native audio processing for the model
             aiRecognizer = speechCommands.create('BROWSER_FFT');
             await aiRecognizer.ensureModelLoaded();
-            
-            wordLabels = aiRecognizer.wordLabels(); // Gets the array of trained classes
-            
+            wordLabels = aiRecognizer.wordLabels();
             UI.status.innerText = "AI Online";
             UI.status.style.background = "var(--success)";
             UI.start.disabled = false;
-            console.log("Model loaded successfully!");
         } catch (e) {
-            console.error("AI Model Error:", e);
             UI.status.innerText = "Network Error";
             UI.status.style.background = "var(--danger)";
         }
@@ -183,34 +181,32 @@
 
     loadModel();
 
-    // 2. Main Controls
     UI.start.onclick = async () => {
         try {
-            // Get Mic Permission for our custom recording pipeline
+            if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             initRecordingPipeline(stream);
-            
-            // Start the AI listening process
             startAIListening();
             
             isActive = true;
+            isPlaying = false;
             startTime = Date.now();
             UI.start.disabled = true;
             UI.stop.disabled = false;
+            UI.play.style.display = "none";
+            UI.msg.innerText = "Monitoring and recording...";
             
             monitorSleep();
             checkAlarm();
             drawVisualizer();
         } catch (err) {
-            alert("Microphone permission is required.");
-            console.error(err);
+            alert("Microphone permission required.");
         }
     };
 
     UI.stop.onclick = () => {
         isActive = false;
         if(mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
-        if(audioCtx) audioCtx.close();
         if(aiRecognizer && aiRecognizer.isListening()) aiRecognizer.stopListening();
         
         clearInterval(uiInterval);
@@ -220,20 +216,17 @@
         UI.stop.disabled = true;
         UI.phase.innerText = "Awake";
         UI.ai.innerText = "Stopped";
-        UI.ai.style.color = "var(--text)";
     };
 
-    // 3. Audio Recording Pipeline & Noise Gate
     function initRecordingPipeline(stream) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         source = audioCtx.createMediaStreamSource(stream);
         
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 1024;
         
-        // The GainNode acts as the Noise Gate
         noiseGate = audioCtx.createGain();
-        noiseGate.gain.value = 0; // Default: Muted
+        noiseGate.gain.value = 0; 
 
         source.connect(analyser);
         source.connect(noiseGate);
@@ -242,20 +235,21 @@
         noiseGate.connect(dest);
 
         mediaRecorder = new MediaRecorder(dest.stream);
-        mediaRecorder.ondataavailable = e => {
-            if(e.data.size > 0) chunks.push(e.data);
+        chunks = [];
+        mediaRecorder.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(chunks, { type: 'audio/webm' });
+            recordedBlobUrl = URL.createObjectURL(blob);
+            UI.audio.src = recordedBlobUrl;
+            UI.play.style.display = "block";
+            UI.msg.innerText = "Recording saved. Click play to review with visualizer.";
         };
-        mediaRecorder.onstop = saveAudio;
         mediaRecorder.start();
     }
 
-    // 4. AI Listening Logic
     function startAIListening() {
-        // The recognizer automatically processes mic input and triggers the callback
         aiRecognizer.listen(result => {
             if(!isActive) return;
-
-            // Find the class with the highest probability score
             let maxScore = -1;
             let classIndex = -1;
             for(let i = 0; i < result.scores.length; i++) {
@@ -264,29 +258,52 @@
                     classIndex = i;
                 }
             }
-            
             const detectedClass = wordLabels[classIndex];
 
-            // Logic: If AI detects pure background noise, mute the recorder.
-            // If it detects anything else (speech/vocalizations), open the recorder.
             if (detectedClass === '_background_noise_') {
                 noiseGate.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
                 UI.ai.innerText = "Filtering Noise";
-                UI.ai.style.color = "var(--text)";
             } else {
                 noiseGate.gain.setTargetAtTime(1, audioCtx.currentTime, 0.1);
-                UI.ai.innerText = "Voice / Snore Detected";
+                UI.ai.innerText = "Vocal Detected";
                 UI.ai.style.color = "var(--success)";
             }
-
-        }, {
-            includeSpectrogram: false,
-            probabilityThreshold: 0.70, // Confidence threshold (70%)
-            overlapFactor: 0.5
-        });
+        }, { probabilityThreshold: 0.70 });
     }
 
-    // 5. Utilities
+    // Playback Logic with Synchronized Visualizer
+    UI.play.onclick = async () => {
+        if (isPlaying) {
+            UI.audio.pause();
+            return;
+        }
+
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        // Disconnect previous sources if any
+        if (playbackSource) playbackSource.disconnect();
+        
+        // Create playback source from the audio element
+        playbackSource = audioCtx.createMediaElementSource(UI.audio);
+        playbackSource.connect(analyser);
+        analyser.connect(audioCtx.destination);
+
+        UI.audio.play();
+        isPlaying = true;
+        isActive = true; // Trigger draw loop
+        UI.play.innerText = "⏸ Pause Playback";
+        UI.ai.innerText = "Playing Recording...";
+        
+        drawVisualizer();
+
+        UI.audio.onended = () => {
+            isPlaying = false;
+            isActive = false;
+            UI.play.innerText = "▶ Play Last Recording";
+            UI.ai.innerText = "Playback Finished";
+        };
+    };
+
     function monitorSleep() {
         uiInterval = setInterval(() => {
             const elapsed = (Date.now() - startTime) / 60000;
@@ -301,22 +318,24 @@
             const now = new Date();
             const current = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
             if(current === UI.alarm.value && now.getSeconds() === 0) {
-                alert("⏰ Wake up! It's time.");
+                alert("⏰ Wake up!");
             }
         }, 1000);
     }
 
     function drawVisualizer() {
-        if(!isActive) return;
+        if(!isActive && !isPlaying) return;
         requestAnimationFrame(drawVisualizer);
+        
         const data = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteTimeDomainData(data);
         
         UI.ctx.fillStyle = '#020617';
         UI.ctx.fillRect(0,0, UI.canvas.width, UI.canvas.height);
-        UI.ctx.lineWidth = 2;
-        UI.ctx.strokeStyle = '#6366f1';
+        UI.ctx.lineWidth = 3;
+        UI.ctx.strokeStyle = isPlaying ? '#10b981' : '#6366f1';
         UI.ctx.beginPath();
+        
         let x = 0;
         const slice = UI.canvas.width / data.length;
         for(let i=0; i<data.length; i++) {
@@ -329,26 +348,8 @@
         UI.ctx.stroke();
     }
 
-    function saveAudio() {
-        if(chunks.length === 0) return;
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        chunks = [];
-        const url = URL.createObjectURL(blob);
-        const div = document.createElement('div');
-        div.className = 'audio-item';
-        div.innerHTML = `
-            <small>Log: ${new Date().toLocaleTimeString()}</small>
-            <audio controls src="${url}"></audio>
-            <a href="${url}" download="SleepLog_${Date.now()}.webm" style="color:var(--primary); font-size:0.8rem; text-decoration:none; display:block; margin-top:5px;">⬇ Download Log</a>
-        `;
-        UI.list.prepend(div);
-    }
-
-    // Register Service Worker for PWA Offline Support
     if('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-            navigator.serviceWorker.register('sw.js').catch(err => console.error("SW Registration failed:", err));
-        });
+        navigator.serviceWorker.register('sw.js');
     }
 </script>
 </body>
